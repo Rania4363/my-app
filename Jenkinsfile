@@ -1,35 +1,28 @@
 pipeline {
     agent any
 
-    tools {
-        maven 'Maven3'
-    }
-
     environment {
-        DOCKER_IMAGE = "192.168.56.11:8082/my-app"
+        DOCKER_IMAGE = "rouched/my-app"
+        DOCKER_TAG = "latest"
     }
 
     stages {
 
-        stage('Checkout') {
+        stage('Git Checkout') {
             steps {
-                git 'https://github.com/YOUR_REPO.git'
+                git branch: 'main',
+                    credentialsId: 'git-cred',
+                    url: 'https://github.com/Rania4363/my-app.git'
             }
         }
 
-        stage('Build Maven') {
+        stage('Maven Build') {
             steps {
                 sh 'mvn clean package'
             }
         }
 
-        stage('Test') {
-            steps {
-                sh 'mvn test'
-            }
-        }
-
-        stage('SonarQube') {
+        stage('SonarQube Analysis') {
             steps {
                 withSonarQubeEnv('SonarQube') {
                     sh 'mvn sonar:sonar'
@@ -37,19 +30,46 @@ pipeline {
             }
         }
 
-        stage('Docker Build') {
+        stage('Trivy Scan') {
             steps {
-                sh 'docker build -t $DOCKER_IMAGE .'
+                sh '''
+                trivy fs --exit-code 0 --severity HIGH,CRITICAL .
+                '''
             }
         }
 
-        stage('Push Nexus') {
+        stage('Build Docker Image') {
             steps {
-                sh '''
-                docker login 192.168.56.11:8082 -u admin -p admin
-                docker push $DOCKER_IMAGE
-                '''
+                sh "docker build -t $DOCKER_IMAGE:$DOCKER_TAG ."
             }
+        }
+
+        stage('Push Docker Image') {
+            steps {
+                withDockerRegistry(credentialsId: 'docker-cred', url: '') {
+                    sh "docker push $DOCKER_IMAGE:$DOCKER_TAG"
+                }
+            }
+        }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                withKubeConfig([credentialsId: 'k8s-token']) {
+                    sh '''
+                    kubectl apply -f k8s/deployment.yaml
+                    kubectl apply -f k8s/service.yaml
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Pipeline réussi 🚀"
+        }
+        failure {
+            echo "Pipeline échoué ❌"
         }
     }
 }
