@@ -1,132 +1,277 @@
 pipeline {
     agent any
-
+ 
     environment {
-        // 🔥 PATH corrigé pour Trivy et outils système
-        PATH = "/usr/bin:/usr/local/bin:${env.PATH}"
-
-        // 🔥 Nom image Docker
-        IMAGE_NAME = "my-app"
-
-        // 🔥 Registry (modifie si Nexus ou DockerHub)
-        REGISTRY = "localhost:5000"
+        IMAGE_NAME      = "my-app"
+        REGISTRY        = "rouched"                        // Docker Hub username
+        NEXUS_URL       = "192.168.56.20:8082"             // Nexus Docker registry
+        NEXUS_MAVEN_URL = "http://192.168.56.20:8081"      // Nexus Maven URL
+        SONAR_HOST_URL  = "http://192.168.56.20:9000"
+        NAMESPACE       = "default"
     }
-
+ 
+    tools {
+        maven 'Maven-3.9'    // Nom configuré dans Jenkins > Global Tool Configuration
+        jdk   'JDK-17'
+    }
+ 
     stages {
-
-        /* =========================
-           1. GIT CLONE
-        ========================= */
+ 
+        // ─────────────────────────────────────────────
+        // ÉTAPE 1 : Récupération du code source
+        // ─────────────────────────────────────────────
         stage('Git Checkout') {
             steps {
                 git credentialsId: 'git-cred',
-                    url: 'https://github.com/Rania4363/my-app.git',
-                    branch: 'main'
+                    url:            'https://github.com/Rania4363/my-app.git',
+                    branch:         'main'
             }
         }
-
-        /* =========================
-           2. MAVEN BUILD
-        ========================= */
-        stage('Maven Build') {
+ 
+        // ─────────────────────────────────────────────
+        // ÉTAPE 2 : Build Maven + Tests unitaires
+        // ─────────────────────────────────────────────
+        stage('Build & Test') {
             steps {
-                sh 'mvn clean package'
+                sh 'mvn clean package -B'
+                // -B = batch mode (pas de progress bars, logs propres)
             }
-        }
-
-        /* =========================
-           3. SONARQUBE ANALYSIS
-        ========================= */
-        stage('SonarQube Analysis') {
-            steps {
-                withSonarQubeEnv('SonarQube') {
-                    sh 'mvn sonar:sonar'
+            post {
+                always {
+                    junit allowEmptyResults: true,
+                          testResults: '**/target/surefire-reports/*.xml'
+                    // Publier la couverture JaCoCo si plugin configuré dans pom.xml
+                    // jacoco execPattern: '**/target/jacoco.exec'
                 }
             }
         }
-
-        /* =========================
-           4. TRIVY FILE SCAN
-        ========================= */
+ 
+        // ─────────────────────────────────────────────
+        // ÉTAPE 3 : Analyse qualité SonarQube
+        // ─────────────────────────────────────────────
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    withCredentials([string(credentialsId: 'sonar-token',
+                                           variable: 'SONAR_TOKEN')]) {
+                        sh """
+                        mvn sonar:sonar -B \
+                          -Dsonar.projectKey=my-app \
+                          -Dsonar.projectName='My App' \
+                          -Dsonar.login=${SONAR_TOKEN}
+                        """
+                    }
+                }
+            }
+        }
+ 
+        // ─────────────────────────────────────────────
+        // ÉTAPE 4 : Vérification Quality Gate
+        //   → Bloque le pipeline si le code ne passe
+        //     pas les seuils définis dans SonarQube
+        // ─────────────────────────────────────────────
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+ 
+        // ─────────────────────────────────────────────
+        // ÉTAPE 5 : Publication de l'artefact sur Nexus
+        //   → mvn deploy pousse le .jar dans
+        //     Nexus maven-releases ou snapshots
+        // ─────────────────────────────────────────────
+        stage('Nexus Artifact Upload') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'nexus-cred',
+                    usernameVariable: 'NEXUS_USER',
+                    passwordVariable: 'NEXUS_PASS')]) {
+                    sh """
+                    mvn deploy -B -DskipTests \
+                      -Daltdeploymentrepository=nexus::default::${NEXUS_MAVEN_URL}/repository/maven-releases/ \
+                      -Drepository.username=${NEXUS_USER} \
+                      -Drepository.password=${NEXUS_PASS}
+                    """
+                }
+            }
+        }
+ 
+        // ─────────────────────────────────────────────
+        // ÉTAPE 6 : Scan Trivy sur le filesystem
+        //   → Vérifie les dépendances Maven avant
+        //     de construire l'image Docker
+        //   CORRECTION : suppression du || true
+        //   qui neutralisait le exit-code
+        // ─────────────────────────────────────────────
         stage('Trivy FS Scan') {
             steps {
                 sh '''
-                    echo "🔍 Scanning filesystem with Trivy..."
-                    trivy fs --exit-code 0 --severity HIGH,CRITICAL .
+                trivy fs \
+                  --severity HIGH,CRITICAL \
+                  --exit-code 1 \
+                  --format table \
+                  --output trivy-fs-report.txt \
+                  .
+                echo "=== Trivy FS Report ==="
+                cat trivy-fs-report.txt
                 '''
             }
         }
-
-        /* =========================
-           5. BUILD DOCKER IMAGE
-        ========================= */
-        stage('Build Docker Image') {
+ 
+        // ─────────────────────────────────────────────
+        // ÉTAPE 7 : Build de l'image Docker
+        //   → Multi-stage Dockerfile recommandé
+        //     pour minimiser la surface d'attaque
+        // ─────────────────────────────────────────────
+        stage('Docker Build') {
             steps {
-                sh '''
-                    echo "🐳 Building Docker image..."
-                    docker build -t $IMAGE_NAME:latest .
-                '''
+                sh """
+                docker build \
+                  --no-cache \
+                  --build-arg BUILD_NUMBER=${BUILD_NUMBER} \
+                  -t ${IMAGE_NAME}:${BUILD_NUMBER} \
+                  -t ${IMAGE_NAME}:latest \
+                  .
+                """
             }
         }
-
-        /* =========================
-           6. TRIVY IMAGE SCAN
-        ========================= */
-        stage('Trivy Docker Image Scan') {
+ 
+        // ─────────────────────────────────────────────
+        // ÉTAPE 8 : Scan Trivy sur l'image Docker
+        //   CORRECTION : --exit-code 0 → 1
+        //   pour bloquer sur CRITICAL
+        // ─────────────────────────────────────────────
+        stage('Trivy Image Scan') {
             steps {
-                sh '''
-                    echo "🔍 Scanning Docker image..."
-                    trivy image --exit-code 0 --severity HIGH,CRITICAL $IMAGE_NAME:latest
-                '''
+                sh """
+                trivy image \
+                  --severity HIGH,CRITICAL \
+                  --exit-code 1 \
+                  --format table \
+                  --output trivy-image-report.txt \
+                  ${IMAGE_NAME}:${BUILD_NUMBER}
+                echo "=== Trivy Image Report ==="
+                cat trivy-image-report.txt
+                """
             }
         }
-
-        /* =========================
-           7. PUSH IMAGE (REGISTRY)
-        ========================= */
-        stage('Push Docker Image') {
+ 
+        // ─────────────────────────────────────────────
+        // ÉTAPE 9 : Tag & Push vers Docker Hub + Nexus
+        // ─────────────────────────────────────────────
+        stage('Docker Tag & Push') {
             steps {
-                sh '''
-                    echo "📦 Tagging image..."
-                    docker tag $IMAGE_NAME:latest $REGISTRY/$IMAGE_NAME:latest
-
-                    echo "📤 Pushing image..."
-                    docker push $REGISTRY/$IMAGE_NAME:latest
-                '''
+                withCredentials([usernamePassword(
+                    credentialsId: 'docker-cred',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS')]) {
+                    sh """
+                    echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin
+ 
+                    # Push vers Docker Hub
+                    docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${REGISTRY}/${IMAGE_NAME}:${BUILD_NUMBER}
+                    docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${REGISTRY}/${IMAGE_NAME}:latest
+                    docker push ${REGISTRY}/${IMAGE_NAME}:${BUILD_NUMBER}
+                    docker push ${REGISTRY}/${IMAGE_NAME}:latest
+                    """
+                }
+ 
+                // Push vers Nexus Docker Registry (optionnel, décommenter si besoin)
+                // withCredentials([usernamePassword(
+                //     credentialsId: 'nexus-cred',
+                //     usernameVariable: 'NEXUS_USER',
+                //     passwordVariable: 'NEXUS_PASS')]) {
+                //     sh """
+                //     echo \$NEXUS_PASS | docker login ${NEXUS_URL} -u \$NEXUS_USER --password-stdin
+                //     docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${NEXUS_URL}/${IMAGE_NAME}:${BUILD_NUMBER}
+                //     docker push ${NEXUS_URL}/${IMAGE_NAME}:${BUILD_NUMBER}
+                //     """
+                // }
             }
         }
-
-        /* =========================
-           8. DEPLOY KUBERNETES
-        ========================= */
-        stage('Deploy to Kubernetes') {
+ 
+        // ─────────────────────────────────────────────
+        // ÉTAPE 10 : Déploiement Kubernetes
+        //   CORRECTION : envsubst remplace les vars
+        //   dans une COPIE du manifest (pas le fichier
+        //   source), évitant la corruption du dépôt
+        // ─────────────────────────────────────────────
+        stage('Deploy Kubernetes') {
             steps {
-                sh '''
-                    echo "🚀 Deploying to Kubernetes..."
-
-                    kubectl apply -f k8s/deployment.yaml
-                    kubectl apply -f k8s/service.yaml
-
-                    kubectl rollout status deployment/my-app
-                '''
+                withCredentials([file(credentialsId: 'k8s-token',
+                                      variable: 'KUBECONFIG')]) {
+                    sh """
+                    export KUBECONFIG=\$KUBECONFIG
+ 
+                    # Créer une copie temporaire des manifests
+                    cp -r k8s/ k8s-deploy/
+ 
+                    # Substituer le tag image dans la copie
+                    export BUILD_NUMBER=${BUILD_NUMBER}
+                    export REGISTRY=${REGISTRY}
+                    export IMAGE_NAME=${IMAGE_NAME}
+                    envsubst < k8s/deployment.yaml > k8s-deploy/deployment.yaml
+ 
+                    # Appliquer les manifests
+                    kubectl apply -f k8s-deploy/ -n ${NAMESPACE}
+ 
+                    # Attendre la fin du rollout
+                    kubectl rollout status deployment/my-app \
+                      -n ${NAMESPACE} \
+                      --timeout=120s
+ 
+                    # Vérifier l'état final des pods
+                    kubectl get pods -n ${NAMESPACE} -l app=my-app
+ 
+                    # Nettoyage de la copie temporaire
+                    rm -rf k8s-deploy/
+                    """
+                }
             }
         }
     }
-
-    /* =========================
-       POST ACTIONS
-    ========================= */
+ 
+    // ─────────────────────────────────────────────────
+    // POST-PIPELINE : Notifications + Nettoyage
+    //   Remplacer emailext par slackSend si Slack
+    //   est préféré (plugin Jenkins Slack requis)
+    // ─────────────────────────────────────────────────
     post {
         success {
-            echo "✅ Pipeline SUCCESS"
+            echo "✅ Pipeline SUCCESS — Build #${BUILD_NUMBER}"
+            // Notification par email (plugin Email Extension requis)
+            // emailext(
+            //     subject: "✅ [Jenkins] my-app #${BUILD_NUMBER} — SUCCESS",
+            //     body: "Le pipeline s'est terminé avec succès.\nBuild: ${BUILD_URL}",
+            //     to: 'team@example.com'
+            // )
+            // Notification Slack
+            // slackSend(
+            //     color: 'good',
+            //     message: "✅ *my-app* build #${BUILD_NUMBER} déployé avec succès — ${BUILD_URL}"
+            // )
         }
-
         failure {
-            echo "❌ Pipeline FAILED"
+            echo "❌ Pipeline FAILED — Build #${BUILD_NUMBER}"
+            // emailext(
+            //     subject: "❌ [Jenkins] my-app #${BUILD_NUMBER} — FAILURE",
+            //     body: "Le pipeline a échoué. Consultez les logs : ${BUILD_URL}",
+            //     to: 'team@example.com'
+            // )
+            // slackSend(
+            //     color: 'danger',
+            //     message: "❌ *my-app* build #${BUILD_NUMBER} FAILED — ${BUILD_URL}"
+            // )
         }
-
         always {
-            echo "📊 Cleaning workspace..."
+            // Archiver les rapports Trivy
+            archiveArtifacts allowEmptyArchive: true,
+                             artifacts: 'trivy-*.txt'
+ 
+            // Nettoyer le workspace Jenkins
             cleanWs()
         }
     }
