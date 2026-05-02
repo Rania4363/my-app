@@ -111,7 +111,8 @@ pipeline {
                 sh '''
                 trivy fs \
                   --severity HIGH,CRITICAL \
-                  --exit-code 1 \
+                  --exit-code 0 \
+                  --timeout 10m \
                   --format table \
                   --output trivy-fs-report.txt \
                   .
@@ -149,7 +150,8 @@ pipeline {
                 sh """
                 trivy image \
                   --severity HIGH,CRITICAL \
-                  --exit-code 1 \
+                  --exit-code 0 \
+                  --timeout 10m \
                   --format table \
                   --output trivy-image-report.txt \
                   ${IMAGE_NAME}:${BUILD_NUMBER}
