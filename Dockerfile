@@ -1,7 +1,10 @@
-FROM eclipse-temurin:17-jdk
-
+FROM eclipse-temurin:17-jdk-alpine AS builder
 WORKDIR /app
+COPY target/*.jar app.jar
 
-COPY target/my-app-1.0-SNAPSHOT.jar app.jar
-
-CMD ["java", "-jar", "app.jar"]
+FROM eclipse-temurin:17-jre-alpine
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+USER appuser
+COPY --from=builder /app/app.jar app.jar
+EXPOSE 8080
+ENTRYPOINT ["java","-jar","app.jar"]
