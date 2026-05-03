@@ -203,38 +203,16 @@ pipeline {
         // ─────────────────────────────────────────────
         stage('Deploy Kubernetes') {
             steps {
-                withCredentials([file(credentialsId: 'k8s-token',
-                                      variable: 'KUBECONFIG')]) {
+                withCredentials([file(credentialsId: 'k8s-token', variable: 'KUBECONFIG')]) {
                     sh """
                     export KUBECONFIG=\$KUBECONFIG
- 
-                    # Créer une copie temporaire des manifests
-                    cp -r k8s/ k8s-deploy/
- 
-                    # Substituer le tag image dans la copie
-                    export BUILD_NUMBER=${BUILD_NUMBER}
-                    export REGISTRY=${REGISTRY}
-                    export IMAGE_NAME=${IMAGE_NAME}
-                    envsubst < k8s/deployment.yaml > k8s-deploy/deployment.yaml
- 
-                    # Appliquer les manifests
-                    kubectl apply -f k8s-deploy/ -n ${NAMESPACE}
- 
-                    # Attendre la fin du rollout
-                    kubectl rollout status deployment/my-app \
-                      -n ${NAMESPACE} \
-                      --timeout=120s
- 
-                    # Vérifier l'état final des pods
-                    kubectl get pods -n ${NAMESPACE} -l app=my-app
- 
-                    # Nettoyage de la copie temporaire
-                    rm -rf k8s-deploy/
+                    kubectl apply -f k8s/
+                    kubectl rollout status deployment/my-app --timeout=120s
+                    kubectl get pods
                     """
                 }
             }
         }
-    }
  
     // ─────────────────────────────────────────────────
     // POST-PIPELINE : Notifications + Nettoyage
