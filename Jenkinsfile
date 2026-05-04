@@ -6,6 +6,9 @@ pipeline {
         REGISTRY   = "rouched"
         NEXUS_URL  = "192.168.56.20:8082"
         NAMESPACE  = "default"
+        K8S_HOST   = "192.168.56.30"
+        K8S_USER   = "kubernetes"
+        SSH_KEY    = "/var/jenkins_home/.ssh/k8s_rsa"
     }
 
     stages {
@@ -121,31 +124,45 @@ pipeline {
 
         stage('Deploy to Kubernetes') {
             steps {
-                sh """
-                kubectl config set-cluster kubernetes \
-                  --server=https://192.168.56.30:6443 \
-                  --insecure-skip-tls-verify=true
+                withCredentials([usernamePassword(
+                    credentialsId: 'nexus-cred',
+                    usernameVariable: 'NEXUS_USER',
+                    passwordVariable: 'NEXUS_PASS')]) {
+                    sh """
+                    kubectl config set-cluster kubernetes \
+                      --server=https://${K8S_HOST}:6443 \
+                      --insecure-skip-tls-verify=true
 
-                kubectl config set-credentials jenkins \
-                  --token=\$(cat /var/jenkins_home/k8s-token.txt)
+                    kubectl config set-credentials jenkins \
+                      --token=\$(cat /var/jenkins_home/k8s-token.txt)
 
-                kubectl config set-context jenkins-context \
-                  --cluster=kubernetes \
-                  --user=jenkins
+                    kubectl config set-context jenkins-context \
+                      --cluster=kubernetes \
+                      --user=jenkins
 
-                kubectl config use-context jenkins-context
+                    kubectl config use-context jenkins-context
 
-                kubectl set image deployment/my-app \
-                  my-app=${NEXUS_URL}/${IMAGE_NAME}:${BUILD_NUMBER} \
-                  -n ${NAMESPACE}
+                    kubectl set image deployment/my-app \
+                      my-app=${NEXUS_URL}/${IMAGE_NAME}:${BUILD_NUMBER} \
+                      -n ${NAMESPACE}
 
-                kubectl rollout status deployment/my-app -n ${NAMESPACE}
-                kubectl get pods -n ${NAMESPACE}
-                """
+                    ssh -i ${SSH_KEY} \
+                      -o StrictHostKeyChecking=no \
+                      ${K8S_USER}@${K8S_HOST} \
+                      "sudo ctr --address /var/run/containerd/containerd.sock \
+                        --namespace k8s.io images pull \
+                        --plain-http \
+                        --user \$NEXUS_USER:\$NEXUS_PASS \
+                        ${NEXUS_URL}/${IMAGE_NAME}:${BUILD_NUMBER}"
+
+                    kubectl rollout status deployment/my-app -n ${NAMESPACE}
+                    kubectl get pods -n ${NAMESPACE}
+                    """
+                }
             }
         }
 
-    } 
+    }
 
     post {
         success {
