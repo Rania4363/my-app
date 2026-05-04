@@ -3,21 +3,18 @@ pipeline {
 
     environment {
         IMAGE_NAME = "my-app"
-        NEXUS_REGISTRY = "192.168.56.20:8082"
-        BUILD_TAG = "my-app:${BUILD_NUMBER}"
-        FULL_IMAGE = "${NEXUS_REGISTRY}/${BUILD_TAG}"
-        K8S_HOST = "192.168.56.30"
-        K8S_USER = "kubernetes"
-        NAMESPACE = "default"
+        REGISTRY   = "rouched"
+        NEXUS_URL  = "192.168.56.20:8082"
+        NAMESPACE  = "default"
     }
 
     stages {
 
-        stage('Checkout Code') {
+        stage('Git Checkout') {
             steps {
-                git credentialsId: 'git-cred',
-                    url: 'https://github.com/Rania4363/my-app.git',
-                    branch: 'main'
+                git branch: 'main',
+                    credentialsId: 'git-cred',
+                    url: 'https://github.com/Rania4363/my-app.git'
             }
         }
 
@@ -33,82 +30,135 @@ pipeline {
             }
         }
 
-        stage('Build Docker Image') {
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh 'mvn sonar:sonar -B'
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: false
+                }
+            }
+        }
+
+        stage('Trivy FS Scan') {
             steps {
                 sh """
-                    docker build -t ${IMAGE_NAME}:${BUILD_NUMBER} .
-                    docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${IMAGE_NAME}:latest
+                trivy fs \
+                  --severity HIGH,CRITICAL \
+                  --exit-code 0 \
+                  --timeout 10m \
+                  --format table \
+                  --output trivy-fs-report.txt \
+                  .
+                cat trivy-fs-report.txt
                 """
             }
         }
 
-        stage('Push to Nexus') {
+        stage('Docker Build') {
+            steps {
+                sh """
+                docker build -t ${IMAGE_NAME}:${BUILD_NUMBER} .
+                docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${IMAGE_NAME}:latest
+                """
+            }
+        }
+
+        stage('Trivy Image Scan') {
+            steps {
+                sh """
+                trivy image \
+                  --severity HIGH,CRITICAL \
+                  --exit-code 0 \
+                  --timeout 10m \
+                  --format table \
+                  --output trivy-image-report.txt \
+                  ${IMAGE_NAME}:${BUILD_NUMBER}
+                cat trivy-image-report.txt
+                """
+            }
+        }
+
+        stage('Docker Push — Docker Hub') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: 'docker-cred',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS')]) {
+                    sh """
+                    echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin
+                    docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${REGISTRY}/${IMAGE_NAME}:${BUILD_NUMBER}
+                    docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${REGISTRY}/${IMAGE_NAME}:latest
+                    docker push ${REGISTRY}/${IMAGE_NAME}:${BUILD_NUMBER}
+                    docker push ${REGISTRY}/${IMAGE_NAME}:latest
+                    """
+                }
+            }
+        }
+
+        stage('Docker Push — Nexus') {
             steps {
                 withCredentials([usernamePassword(
                     credentialsId: 'nexus-cred',
                     usernameVariable: 'NEXUS_USER',
-                    passwordVariable: 'NEXUS_PASS'
-                )]) {
+                    passwordVariable: 'NEXUS_PASS')]) {
                     sh """
-                        echo \$NEXUS_PASS | docker login ${NEXUS_REGISTRY} -u \$NEXUS_USER --password-stdin
-                        docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${FULL_IMAGE}
-                        docker push ${FULL_IMAGE}
+                    echo \$NEXUS_PASS | docker login http://${NEXUS_URL} -u \$NEXUS_USER --password-stdin
+                    docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${NEXUS_URL}/${IMAGE_NAME}:${BUILD_NUMBER}
+                    docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${NEXUS_URL}/${IMAGE_NAME}:latest
+                    docker push ${NEXUS_URL}/${IMAGE_NAME}:${BUILD_NUMBER}
+                    docker push ${NEXUS_URL}/${IMAGE_NAME}:latest
                     """
                 }
             }
         }
 
-        stage('Deploy on Kubernetes Node') {
+        stage('Deploy to Kubernetes') {
             steps {
-                sshagent(['k8s-ssh-key']) {
-                    sh """
-                        ssh -o StrictHostKeyChecking=no ${K8S_USER}@${K8S_HOST} "
-                            echo '=== Pull de l'image depuis Nexus ==='
-                            sudo ctr --address /run/containerd/containerd.sock \\
-                              --namespace k8s.io images pull \\
-                              --plain-http \\
-                              --user admin:Raniaensa@2024 \\
-                              ${FULL_IMAGE}
-                            
-                            echo '=== Redémarrage du deployment ==='
-                            kubectl set image deployment/${IMAGE_NAME} \\
-                              ${IMAGE_NAME}=${FULL_IMAGE} \\
-                              -n ${NAMESPACE}
-                            
-                            kubectl rollout restart deployment/${IMAGE_NAME} -n ${NAMESPACE}
-                            
-                            echo '=== Attente du déploiement ==='
-                            kubectl rollout status deployment/${IMAGE_NAME} -n ${NAMESPACE} --timeout=120s
-                            
-                            echo '=== Status des pods ==='
-                            kubectl get pods -n ${NAMESPACE} -l app=${IMAGE_NAME}
-                        "
-                    """
-                }
+                sh """
+                kubectl config set-cluster kubernetes \
+                  --server=https://192.168.56.30:6443 \
+                  --insecure-skip-tls-verify=true
+
+                kubectl config set-credentials jenkins \
+                  --token=\$(cat /var/jenkins_home/k8s-token.txt)
+
+                kubectl config set-context jenkins-context \
+                  --cluster=kubernetes \
+                  --user=jenkins
+
+                kubectl config use-context jenkins-context
+
+                kubectl set image deployment/my-app \
+                  my-app=${NEXUS_URL}/${IMAGE_NAME}:${BUILD_NUMBER} \
+                  -n ${NAMESPACE}
+
+                kubectl rollout status deployment/my-app -n ${NAMESPACE}
+                kubectl get pods -n ${NAMESPACE}
+                """
             }
         }
+
     }
 
     post {
         success {
-            echo "========================================="
-            echo "✅ Pipeline terminé avec succès - Build #${BUILD_NUMBER}"
-            echo "========================================="
-            echo "Image: ${FULL_IMAGE}"
-            echo "Déployé sur: ${K8S_HOST}"
-            echo "========================================="
+            echo "✅ Pipeline CI/CD réussi — Build #${BUILD_NUMBER} 🚀"
         }
         failure {
-            echo "========================================="
-            echo "❌ Pipeline échoué - Build #${BUILD_NUMBER}"
-            echo "========================================="
-            echo "Vérifiez les logs ci-dessus"
-            echo "========================================="
+            echo "❌ Pipeline échoué — Build #${BUILD_NUMBER}"
         }
         always {
             archiveArtifacts allowEmptyArchive: true,
-                             artifacts: '**/target/surefire-reports/*.xml'
+                             artifacts: 'trivy-*.txt'
             cleanWs()
         }
     }
+
 }
