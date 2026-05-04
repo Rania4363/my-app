@@ -142,9 +142,6 @@ pipeline {
 
                     kubectl config use-context jenkins-context
 
-                    kubectl set image deployment/my-app \
-                      my-app=${NEXUS_URL}/${IMAGE_NAME}:${BUILD_NUMBER} \
-                      -n ${NAMESPACE}
 
                     ssh -i ${SSH_KEY} \
                       -o StrictHostKeyChecking=no \
@@ -154,6 +151,9 @@ pipeline {
                         --plain-http \
                         --user \$NEXUS_USER:\$NEXUS_PASS \
                         ${NEXUS_URL}/${IMAGE_NAME}:${BUILD_NUMBER}"
+                    kubectl set image deployment/my-app \
+                      my-app=${NEXUS_URL}/${IMAGE_NAME}:${BUILD_NUMBER} \
+                      -n ${NAMESPACE}
 
                     kubectl rollout status deployment/my-app -n ${NAMESPACE}
                     kubectl get pods -n ${NAMESPACE}
