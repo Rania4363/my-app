@@ -39,7 +39,7 @@ pipeline {
             }
         }
 
-        stage('Security & Quality (Parallel)') {
+        stage('Security & Quality Scan (Parallel)') {
             parallel {
 
                 stage('SonarQube Analysis') {
@@ -69,7 +69,7 @@ pipeline {
         stage('Quality Gate') {
             steps {
                 timeout(time: 3, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: false
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
@@ -77,8 +77,11 @@ pipeline {
         stage('Docker Build (Cached)') {
             steps {
                 sh """
+                docker pull ${IMAGE_NAME}:latest || true
+
                 docker build --cache-from ${IMAGE_NAME}:latest \
                   -t ${IMAGE_NAME}:${BUILD_NUMBER} .
+
                 docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${IMAGE_NAME}:latest
                 """
             }
@@ -106,8 +109,10 @@ pipeline {
                     passwordVariable: 'DOCKER_PASS')]) {
                     sh """
                     echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin
+
                     docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${REGISTRY}/${IMAGE_NAME}:${BUILD_NUMBER}
                     docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${REGISTRY}/${IMAGE_NAME}:latest
+
                     docker push ${REGISTRY}/${IMAGE_NAME}:${BUILD_NUMBER}
                     docker push ${REGISTRY}/${IMAGE_NAME}:latest
                     """
@@ -123,8 +128,10 @@ pipeline {
                     passwordVariable: 'NEXUS_PASS')]) {
                     sh """
                     echo \$NEXUS_PASS | docker login ${NEXUS_URL} -u \$NEXUS_USER --password-stdin
+
                     docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${NEXUS_URL}/${IMAGE_NAME}:${BUILD_NUMBER}
                     docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${NEXUS_URL}/${IMAGE_NAME}:latest
+
                     docker push ${NEXUS_URL}/${IMAGE_NAME}:${BUILD_NUMBER}
                     docker push ${NEXUS_URL}/${IMAGE_NAME}:latest
                     """
