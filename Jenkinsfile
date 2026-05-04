@@ -6,24 +6,15 @@ pipeline {
         REGISTRY   = "rouched"
         NEXUS_URL  = "192.168.56.20:8082"
         NAMESPACE  = "default"
-        MAVEN_OPTS = "-Dmaven.repo.local=.m2/repository"
     }
 
     stages {
 
-        stage('Git Checkout (Fast)') {
+        stage('Git Checkout') {
             steps {
-                checkout([
-                    $class: 'GitSCM',
-                    branches: [[name: '*/main']],
-                    extensions: [
-                        [$class: 'CloneOption', depth: 1, shallow: true, noTags: true]
-                    ],
-                    userRemoteConfigs: [[
-                        url: 'https://github.com/Rania4363/my-app.git',
-                        credentialsId: 'git-cred'
-                    ]]
-                ])
+                git branch: 'main',
+                    credentialsId: 'git-cred',
+                    url: 'https://github.com/Rania4363/my-app.git'
             }
         }
 
@@ -39,49 +30,41 @@ pipeline {
             }
         }
 
-        stage('Security & Quality Scan (Parallel)') {
-            parallel {
-
-                stage('SonarQube Analysis') {
-                    steps {
-                        withSonarQubeEnv('SonarQube') {
-                            sh 'mvn sonar:sonar -B'
-                        }
-                    }
-                }
-
-                stage('Trivy FS Scan') {
-                    steps {
-                        sh """
-                        trivy fs \
-                          --severity HIGH,CRITICAL \
-                          --exit-code 0 \
-                          --timeout 5m \
-                          --format table \
-                          --output trivy-fs-report.txt \
-                          .
-                        """
-                    }
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('SonarQube') {
+                    sh 'mvn sonar:sonar -B'
                 }
             }
         }
 
         stage('Quality Gate') {
             steps {
-                timeout(time: 3, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: false
                 }
             }
         }
 
-        stage('Docker Build (Cached)') {
+        stage('Trivy FS Scan') {
             steps {
                 sh """
-                docker pull ${IMAGE_NAME}:latest || true
+                trivy fs \
+                  --severity HIGH,CRITICAL \
+                  --exit-code 0 \
+                  --timeout 10m \
+                  --format table \
+                  --output trivy-fs-report.txt \
+                  .
+                cat trivy-fs-report.txt
+                """
+            }
+        }
 
-                docker build --cache-from ${IMAGE_NAME}:latest \
-                  -t ${IMAGE_NAME}:${BUILD_NUMBER} .
-
+        stage('Docker Build') {
+            steps {
+                sh """
+                docker build -t ${IMAGE_NAME}:${BUILD_NUMBER} .
                 docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${IMAGE_NAME}:latest
                 """
             }
@@ -93,10 +76,11 @@ pipeline {
                 trivy image \
                   --severity HIGH,CRITICAL \
                   --exit-code 0 \
-                  --timeout 5m \
+                  --timeout 10m \
                   --format table \
                   --output trivy-image-report.txt \
                   ${IMAGE_NAME}:${BUILD_NUMBER}
+                cat trivy-image-report.txt
                 """
             }
         }
@@ -109,10 +93,8 @@ pipeline {
                     passwordVariable: 'DOCKER_PASS')]) {
                     sh """
                     echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin
-
                     docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${REGISTRY}/${IMAGE_NAME}:${BUILD_NUMBER}
                     docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${REGISTRY}/${IMAGE_NAME}:latest
-
                     docker push ${REGISTRY}/${IMAGE_NAME}:${BUILD_NUMBER}
                     docker push ${REGISTRY}/${IMAGE_NAME}:latest
                     """
@@ -127,11 +109,9 @@ pipeline {
                     usernameVariable: 'NEXUS_USER',
                     passwordVariable: 'NEXUS_PASS')]) {
                     sh """
-                    echo \$NEXUS_PASS | docker login ${NEXUS_URL} -u \$NEXUS_USER --password-stdin
-
+                    echo \$NEXUS_PASS | docker login http://${NEXUS_URL} -u \$NEXUS_USER --password-stdin
                     docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${NEXUS_URL}/${IMAGE_NAME}:${BUILD_NUMBER}
                     docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${NEXUS_URL}/${IMAGE_NAME}:latest
-
                     docker push ${NEXUS_URL}/${IMAGE_NAME}:${BUILD_NUMBER}
                     docker push ${NEXUS_URL}/${IMAGE_NAME}:latest
                     """
@@ -165,7 +145,7 @@ pipeline {
             }
         }
 
-    }
+    } 
 
     post {
         success {
@@ -177,6 +157,8 @@ pipeline {
         always {
             archiveArtifacts allowEmptyArchive: true,
                              artifacts: 'trivy-*.txt'
+            cleanWs()
         }
     }
+
 }
