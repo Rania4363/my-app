@@ -40,12 +40,13 @@ pipeline {
             steps {
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                     withSonarQubeEnv('SonarQube') {
-                    sh """
-                        mvn sonar:sonar \
-                            -Dsonar.projectKey=${APP_NAME} \
-                            -Dsonar.host.url=${SONAR_URL} \
-                            -Dsonar.login=${SONAR_TOKEN}
-                    """
+                        sh """
+                            mvn sonar:sonar \
+                                -Dsonar.projectKey=${APP_NAME} \
+                                -Dsonar.host.url=${SONAR_URL} \
+                                -Dsonar.token=${SONAR_TOKEN}
+                        """
+                    }
                 }
             }
         }
