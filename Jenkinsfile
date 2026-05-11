@@ -1,7 +1,8 @@
 pipeline {
     agent any
- 
     environment {
+        JAVA_HOME       = '/usr/lib/jvm/java-21-openjdk-amd64'
+        PATH            = "${JAVA_HOME}/bin:${PATH}"
         APP_NAME        = "springboot-app"
         IMAGE_NAME      = "${APP_NAME}:${BUILD_NUMBER}"
         NEXUS_URL       = "192.168.192.132:8081"
@@ -10,26 +11,21 @@ pipeline {
         SONAR_URL       = "http://192.168.192.132:9000"
         K8S_NAMESPACE   = "default"
     }
- 
     tools {
         maven 'Maven3'
         jdk   'JDK21'
     }
- 
     stages {
- 
         stage('Checkout') {
             steps {
                 checkout scm
             }
         }
- 
         stage('Build Maven') {
             steps {
                 sh 'mvn clean package -DskipTests'
             }
         }
- 
         stage('Tests unitaires') {
             steps {
                 sh 'mvn test'
@@ -40,7 +36,6 @@ pipeline {
                 }
             }
         }
- 
         stage('Analyse SonarQube') {
             steps {
                 withSonarQubeEnv('SonarQube') {
@@ -53,7 +48,6 @@ pipeline {
                 }
             }
         }
- 
         stage('Quality Gate') {
             steps {
                 timeout(time: 5, unit: 'MINUTES') {
@@ -61,13 +55,11 @@ pipeline {
                 }
             }
         }
- 
         stage('Build Docker Image') {
             steps {
                 sh "docker build -t ${IMAGE_NAME} ."
             }
         }
- 
         stage('Scan Trivy') {
             steps {
                 sh """
@@ -85,7 +77,6 @@ pipeline {
                 }
             }
         }
- 
         stage('Push vers Nexus') {
             steps {
                 withCredentials([usernamePassword(
@@ -94,7 +85,7 @@ pipeline {
                     passwordVariable: 'NEXUS_PASS'
                 )]) {
                     sh """
-                        docker login ${NEXUS_URL} -u ${NEXUS_USER} -p ${NEXUS_PASS}
+                        echo ${NEXUS_PASS} | docker login ${NEXUS_URL} -u ${NEXUS_USER} --password-stdin
                         docker tag ${IMAGE_NAME} ${NEXUS_IMAGE}
                         docker push ${NEXUS_IMAGE}
                         docker logout ${NEXUS_URL}
@@ -102,7 +93,6 @@ pipeline {
                 }
             }
         }
- 
         stage('Deploy Kubernetes') {
             steps {
                 withKubeConfig([credentialsId: 'kubeconfig']) {
@@ -116,7 +106,6 @@ pipeline {
             }
         }
     }
- 
     post {
         success {
             echo "Pipeline réussi - Image déployée : ${NEXUS_IMAGE}"
