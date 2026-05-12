@@ -69,6 +69,7 @@ pipeline {
                         --exit-code 0 \
                         --severity HIGH,CRITICAL \
                         --format table \
+                        --timeout 30m \     
                         -o trivy-report.txt \
                         ${IMAGE_NAME}
                 """
