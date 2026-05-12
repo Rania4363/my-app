@@ -5,7 +5,7 @@ pipeline {
         PATH            = "${JAVA_HOME}/bin:${PATH}"
         APP_NAME        = "springboot-app"
         IMAGE_NAME      = "${APP_NAME}:${BUILD_NUMBER}"
-        NEXUS_URL       = "192.168.192.132:8081"
+        NEXUS_URL       = "192.168.192.132:8082"
         NEXUS_REPO      = "docker-hosted"
         NEXUS_IMAGE     = "${NEXUS_URL}/${APP_NAME}:${BUILD_NUMBER}"
         SONAR_URL       = "http://192.168.192.132:9000"
