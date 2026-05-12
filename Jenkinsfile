@@ -41,10 +41,7 @@ pipeline {
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                     withSonarQubeEnv('SonarQube') {
                         sh """
-                            mvn sonar:sonar \
-                                -Dsonar.projectKey=${APP_NAME} \
-                                -Dsonar.host.url=${SONAR_URL} \
-                                -Dsonar.token=${SONAR_TOKEN}
+                            mvn sonar:sonar -Dsonar.projectKey=${APP_NAME} -Dsonar.host.url=${SONAR_URL} -Dsonar.token=${SONAR_TOKEN}
                         """
                     }
                 }
@@ -64,15 +61,7 @@ pipeline {
         }
         stage('Scan Trivy') {
             steps {
-                sh """
-                    trivy image \
-                        --exit-code 0 \
-                        --severity HIGH,CRITICAL \
-                        --format table \
-                        --timeout 30m \     
-                        -o trivy-report.txt \
-                        ${IMAGE_NAME}
-                """
+                sh "trivy image --exit-code 0 --severity HIGH,CRITICAL --format table --timeout 15m -o trivy-report.txt ${IMAGE_NAME}"
             }
             post {
                 always {
