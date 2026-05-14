@@ -9,7 +9,8 @@ pipeline {
         NEXUS_REPO      = "docker-hosted"
         NEXUS_IMAGE     = "${NEXUS_URL}/${APP_NAME}:${BUILD_NUMBER}"
         SONAR_URL       = "http://192.168.192.132:9000"
-        K8S_NAMESPACE   = "default"
+        // CORRIGÉ: utiliser le namespace cicd dédié
+        K8S_NAMESPACE   = "cicd"
     }
     tools {
         maven 'Maven3'
@@ -21,11 +22,13 @@ pipeline {
                 checkout scm
             }
         }
+ 
         stage('Build Maven') {
             steps {
                 sh 'mvn clean package -DskipTests'
             }
         }
+ 
         stage('Tests unitaires') {
             steps {
                 sh 'mvn test'
@@ -36,17 +39,22 @@ pipeline {
                 }
             }
         }
+ 
         stage('Analyse SonarQube') {
             steps {
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                     withSonarQubeEnv('SonarQube') {
                         sh """
-                            mvn sonar:sonar -Dsonar.projectKey=${APP_NAME} -Dsonar.host.url=${SONAR_URL} -Dsonar.token=${SONAR_TOKEN}
+                            mvn sonar:sonar \
+                                -Dsonar.projectKey=${APP_NAME} \
+                                -Dsonar.host.url=${SONAR_URL} \
+                                -Dsonar.token=${SONAR_TOKEN}
                         """
                     }
                 }
             }
         }
+ 
         stage('Quality Gate') {
             steps {
                 timeout(time: 15, unit: 'MINUTES') {
@@ -54,14 +62,24 @@ pipeline {
                 }
             }
         }
+ 
         stage('Build Docker Image') {
             steps {
                 sh "docker build -t ${IMAGE_NAME} ."
             }
         }
+ 
         stage('Scan Trivy') {
             steps {
-                sh "trivy image --exit-code 0 --severity HIGH,CRITICAL --format table --timeout 15m -o trivy-report.txt ${IMAGE_NAME}"
+                sh """
+                    trivy image \
+                        --exit-code 0 \
+                        --severity HIGH,CRITICAL \
+                        --format table \
+                        --timeout 15m \
+                        -o trivy-report.txt \
+                        ${IMAGE_NAME}
+                """
             }
             post {
                 always {
@@ -69,6 +87,7 @@ pipeline {
                 }
             }
         }
+ 
         stage('Push vers Nexus') {
             steps {
                 withCredentials([usernamePassword(
@@ -85,29 +104,37 @@ pipeline {
                 }
             }
         }
+ 
         stage('Deploy Kubernetes') {
             steps {
                 withKubeConfig([credentialsId: 'kubeconfig']) {
                     sh """
-                        sed -i 's|IMAGE_PLACEHOLDER|${NEXUS_IMAGE}|g' k8s/deployment.yaml
-                        kubectl apply -f k8s/deployment.yaml -n ${K8S_NAMESPACE}
+                        # CORRIGÉ: sed sur une copie tmp, pas sur le fichier source
+                        # Sinon IMAGE_PLACEHOLDER disparaît après le 1er build
+                        sed 's|IMAGE_PLACEHOLDER|${NEXUS_IMAGE}|g' k8s/deployment.yaml | kubectl apply -f - -n ${K8S_NAMESPACE}
                         kubectl apply -f k8s/service.yaml -n ${K8S_NAMESPACE}
-                        kubectl rollout status deployment/${APP_NAME} -n ${K8S_NAMESPACE}
+                        kubectl rollout status deployment/${APP_NAME} -n ${K8S_NAMESPACE} --timeout=120s
                     """
                 }
             }
         }
     }
+ 
     post {
         success {
-            echo "Pipeline réussi - Image déployée : ${NEXUS_IMAGE}"
+            echo "✅ Pipeline réussi - Image déployée : ${NEXUS_IMAGE}"
         }
         failure {
-            echo "Pipeline échoué - vérifiez les logs"
+            echo "❌ Pipeline échoué - vérifiez les logs"
         }
         always {
+            // Nettoyer les images locales pour libérer de l'espace sur VM1
             sh "docker rmi ${IMAGE_NAME} || true"
             sh "docker rmi ${NEXUS_IMAGE} || true"
         }
     }
 }
+
+
+
+

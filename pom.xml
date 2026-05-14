@@ -3,16 +3,13 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
          https://maven.apache.org/xsd/maven-4.0.0.xsd">
- 
     <modelVersion>4.0.0</modelVersion>
- 
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
         <version>3.2.0</version>
         <relativePath/>
     </parent>
- 
     <groupId>com.example</groupId>
     <artifactId>springboot-app</artifactId>
     <version>1.0.0</version>
@@ -21,7 +18,8 @@
     <description>Application Spring Boot CI/CD</description>
  
     <properties>
-        <java.version>17</java.version>
+        <!-- CORRIGÉ: 17 → 21 pour correspondre au Dockerfile eclipse-temurin:21 -->
+        <java.version>21</java.version>
         <sonar.projectKey>springboot-app</sonar.projectKey>
         <sonar.host.url>http://192.168.192.132:9000</sonar.host.url>
         <sonar.coverage.jacoco.xmlReportPaths>
@@ -40,6 +38,12 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+ 
+        <!-- AJOUTÉ: Micrometer Prometheus - expose /actuator/prometheus pour Prometheus/Grafana -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
  
         <!-- Tests -->
@@ -99,5 +103,4 @@
             </plugin>
         </plugins>
     </build>
- 
 </project>
