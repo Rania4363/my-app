@@ -9,8 +9,7 @@ pipeline {
         NEXUS_REPO      = "docker-hosted"
         NEXUS_IMAGE     = "${NEXUS_URL}/${APP_NAME}:${BUILD_NUMBER}"
         SONAR_URL       = "http://192.168.192.132:9000"
-        // CORRIGÉ: utiliser le namespace cicd dédié
-        K8S_NAMESPACE   = "cicd"
+        K8S_NAMESPACE   = "default"
     }
     tools {
         maven 'Maven3'
@@ -22,13 +21,13 @@ pipeline {
                 checkout scm
             }
         }
- 
+
         stage('Build Maven') {
             steps {
                 sh 'mvn clean package -DskipTests'
             }
         }
- 
+
         stage('Tests unitaires') {
             steps {
                 sh 'mvn test'
@@ -39,7 +38,7 @@ pipeline {
                 }
             }
         }
- 
+
         stage('Analyse SonarQube') {
             steps {
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
@@ -54,7 +53,7 @@ pipeline {
                 }
             }
         }
- 
+
         stage('Quality Gate') {
             steps {
                 timeout(time: 15, unit: 'MINUTES') {
@@ -62,13 +61,13 @@ pipeline {
                 }
             }
         }
- 
+
         stage('Build Docker Image') {
             steps {
                 sh "docker build -t ${IMAGE_NAME} ."
             }
         }
- 
+
         stage('Scan Trivy') {
             steps {
                 sh """
@@ -87,7 +86,7 @@ pipeline {
                 }
             }
         }
- 
+
         stage('Push vers Nexus') {
             steps {
                 withCredentials([usernamePassword(
@@ -104,22 +103,18 @@ pipeline {
                 }
             }
         }
- 
-        stage('Deploy Kubernetes') {
+
+        stage('Deploy to Kubernetes') {
             steps {
-                withKubeConfig([credentialsId: 'kubeconfig']) {
-                    sh """
-                        # CORRIGÉ: sed sur une copie tmp, pas sur le fichier source
-                        # Sinon IMAGE_PLACEHOLDER disparaît après le 1er build
-                        sed 's|IMAGE_PLACEHOLDER|${NEXUS_IMAGE}|g' k8s/deployment.yaml | kubectl apply -f - -n ${K8S_NAMESPACE}
-                        kubectl apply -f k8s/service.yaml -n ${K8S_NAMESPACE}
-                        kubectl rollout status deployment/${APP_NAME} -n ${K8S_NAMESPACE} --timeout=120s
-                    """
-                }
+                sh """
+                    kubectl set image deployment/${APP_NAME} \
+                    ${APP_NAME}=${NEXUS_IMAGE} \
+                    --namespace=${K8S_NAMESPACE}
+                """
             }
         }
     }
- 
+
     post {
         success {
             echo "✅ Pipeline réussi - Image déployée : ${NEXUS_IMAGE}"
@@ -128,13 +123,8 @@ pipeline {
             echo "❌ Pipeline échoué - vérifiez les logs"
         }
         always {
-            // Nettoyer les images locales pour libérer de l'espace sur VM1
             sh "docker rmi ${IMAGE_NAME} || true"
             sh "docker rmi ${NEXUS_IMAGE} || true"
         }
     }
 }
-
-
-
-
